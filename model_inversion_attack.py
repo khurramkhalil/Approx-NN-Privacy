@@ -88,29 +88,67 @@ for i in range(10):
     mean_images[i] = torch.mean(class_data_tensor, axis=0)
 
 
-# Update the model_inversion_attack function to include the mean image term:
-def model_inversion_attack(model, device, target_class, steps, lr, mean_images, alpha=0.5):
+# To obtain better results, we can modify the attack to take advantage of multiple target class samples 
+# in the training dataset. This will help guide the optimization process to produce a more convincing reconstructed image
+
+# Update the model_inversion_attack function to include multiple target class samples
+def model_inversion_attack(model, device, target_class, steps, lr, train_dataset, num_samples=10, alpha=0.5):
     model.eval()
     input_data = torch.randn(1, 1, 28, 28, device=device, requires_grad=True)
     optimizer = optim.SGD([input_data], lr=lr)
-    target_mean_image = mean_images[target_class]
+
+    target_samples = [img for img, label in train_dataset if label == target_class]
+    target_samples = target_samples[:num_samples]
+    target_samples = torch.stack(target_samples).to(device)
 
     for _ in range(steps):
         optimizer.zero_grad()
         output = model(input_data)
+
         class_loss = -output[0, target_class]
-        mean_image_loss = alpha * torch.mean((input_data - target_mean_image) ** 2)
-        total_loss = class_loss + mean_image_loss
+        sample_losses = [alpha * torch.mean((input_data - target_sample) ** 2) for target_sample in target_samples]
+        mean_sample_loss = torch.mean(torch.stack(sample_losses))
+        total_loss = class_loss + mean_sample_loss
+
         total_loss.backward()
         optimizer.step()
     
     return input_data.detach().cpu().numpy()[0, 0]
 
+
+
 target_class = 5
 steps = 1000
 learning_rate = 0.1
-reconstructed_image = model_inversion_attack(model, device, target_class, steps, learning_rate, mean_images)
+
+
+reconstructed_image = model_inversion_attack(model, device, target_class, steps, learning_rate, train_dataset)
 
 plt.imshow(reconstructed_image, cmap='gray')
 plt.title(f"Reconstructed Image (Target Class: {target_class})")
 plt.show()
+
+from sklearn.metrics import pairwise_distances
+from scipy.spatial.distance import cdist
+
+# Nearest neighbor search
+train_data, train_labels = zip(*[(img.numpy(), label) for img, label in train_dataset])
+train_data = np.array(train_data).reshape(len(train_data), -1)
+target_class_indices = [i for i, label in enumerate(train_labels) if label == target_class]
+
+distances = cdist(reconstructed_image.reshape(1, -1), train_data[target_class_indices], metric='euclidean')
+nearest_neighbor_index = np.argmin(distances)
+nearest_neighbor_label = train_labels[target_class_indices[nearest_neighbor_index]]
+
+print(f"Nearest neighbor label: {nearest_neighbor_label}")
+print(f"Nearest neighbor distance: {distances[0, nearest_neighbor_index]}")
+
+# Classifier confidence
+reconstructed_image_tensor = torch.tensor(reconstructed_image.reshape(1, 1, 28, 28)).to(device)
+with torch.no_grad():
+    model.eval()
+    output = model(reconstructed_image_tensor)
+    probabilities = torch.softmax(output, dim=1).cpu().numpy()
+
+confidence = probabilities[0, target_class]
+print(f"Classifier confidence for target class: {confidence}")
