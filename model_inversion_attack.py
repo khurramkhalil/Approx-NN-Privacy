@@ -75,17 +75,33 @@ else:
     model_path = "my_model.pt"
     model.load_state_dict(torch.load(model_path))
 
+# To improve the efficacy of the attack, we can modify the loss function to include 
+# an additional term that encourages the output image to be closer to a real image from 
+# the same class. We can achieve this by using the target class's mean image as a reference.
 
-def model_inversion_attack(model, device, target_class, steps, lr):
+# Compute the mean image for each class in the training dataset
+mean_images = torch.zeros((10, 1, 28, 28), device=device)
+
+for i in range(10):
+    class_data = [img for img, label in train_dataset if label == i]
+    class_data_tensor = torch.stack(class_data)
+    mean_images[i] = torch.mean(class_data_tensor, axis=0)
+
+
+# Update the model_inversion_attack function to include the mean image term:
+def model_inversion_attack(model, device, target_class, steps, lr, mean_images, alpha=0.5):
     model.eval()
     input_data = torch.randn(1, 1, 28, 28, device=device, requires_grad=True)
     optimizer = optim.SGD([input_data], lr=lr)
+    target_mean_image = mean_images[target_class]
 
     for _ in range(steps):
         optimizer.zero_grad()
         output = model(input_data)
-        loss = -output[0, target_class]  # Maximize the target class probability
-        loss.backward()
+        class_loss = -output[0, target_class]
+        mean_image_loss = alpha * torch.mean((input_data - target_mean_image) ** 2)
+        total_loss = class_loss + mean_image_loss
+        total_loss.backward()
         optimizer.step()
     
     return input_data.detach().cpu().numpy()[0, 0]
@@ -93,8 +109,7 @@ def model_inversion_attack(model, device, target_class, steps, lr):
 target_class = 5
 steps = 1000
 learning_rate = 0.1
-
-reconstructed_image = model_inversion_attack(model, device, target_class, steps, learning_rate)
+reconstructed_image = model_inversion_attack(model, device, target_class, steps, learning_rate, mean_images)
 
 plt.imshow(reconstructed_image, cmap='gray')
 plt.title(f"Reconstructed Image (Target Class: {target_class})")
